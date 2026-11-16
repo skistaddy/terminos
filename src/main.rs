@@ -1,12 +1,13 @@
-#![allow(warnings)]
 #![allow(unused_imports)]
-#![allow(dead_code)]
+#![allow(unused)]
 
+mod canvas;
 mod input;
 use clap::Parser;
 use input::*;
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -18,26 +19,54 @@ struct Args {
     /// Starts debugging session
     #[arg(short, long)]
     debug: bool,
+
+    /// Starts input test
+    #[arg(short, long)]
+    input: bool,
+}
+
+fn input_test(events: Receiver<Event>) {
+    for event in events {
+        match event {
+            Event::Key { code, state } => {
+                if code == 1 {
+                    break;
+                }
+                let status = if state { "down" } else { "up" };
+                log!("key: {code} {status}");
+            }
+            Event::Mouse { x, y } => {
+                log!("mouse changed: {x}, {y}");
+            }
+            Event::Scroll { x, y } => {
+                log!("scrolled: {x}, {y}");
+            }
+            Event::Unknown => {}
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    let presses = init()?;
+    let events = input::init()?;
 
-    for event in presses {
+    if args.input {
+        println!("starting input test");
+        input_test(events);
+        return Ok(());
+    }
+
+    //canvas::init();
+
+    for event in events {
         match event {
             Event::Key { code, state } => {
-                let status = if state { "down" } else { "up" };
-                println!("key: {code} {status}");
+                if code == 1 {
+                    break;
+                }
             }
-            Event::Mouse { x, y } => {
-                println!("mouse changed: {x}, {y}");
-            }
-            Event::Scroll { x, y } => {
-                println!("scrolled: {x}, {y}");
-            }
-            Event::Unknown => println!("unknown"),
+            _ => {}
         }
     }
 

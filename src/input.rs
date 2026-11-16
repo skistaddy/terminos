@@ -4,7 +4,6 @@ use rustix::fd::AsFd;
 use rustix::io::*;
 use std::error::Error;
 use std::fs::File;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::*;
 use std::thread;
@@ -14,7 +13,14 @@ use std::time::{Duration, Instant};
 macro_rules! log {
     ($($arg:tt)*) => {
         #[cfg(debug_assertions)]
-        eprintln!($($arg)*);
+        {
+            use std::io::Write;
+            let msg = format!($($arg)*);
+            let formatted = msg.replace("\n", "\r\n");
+            let mut stderr = std::io::stderr();
+            let _ = writeln!(stderr, "{}", formatted);
+            let _ = stderr.flush(); // Force immediate write to the raw terminal stream
+        }
     };
 }
 
@@ -112,11 +118,13 @@ pub fn init() -> Result<Receiver<Event>> {
 
     thread::spawn(move || {
         let mut seat = match Seat::open(move |seat, event| {
+            println!("hi");
+
             match event {
                 SeatEvent::Enable => {
                     log!("libseat session active");
 
-                    for (path, name) in enumerate() {
+                    for (path, _) in enumerate() {
                         // gets /dev/input devices
                         open_device(tx.clone(), seat, path);
                     }
@@ -129,7 +137,7 @@ pub fn init() -> Result<Receiver<Event>> {
         }) {
             Ok(s) => s,
             Err(e) => {
-                log!("failed to open libseat: {}", e);
+                eprintln!("failed to open libseat: {}", e);
                 return;
             }
         };
