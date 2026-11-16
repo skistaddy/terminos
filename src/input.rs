@@ -10,6 +10,14 @@ use std::sync::mpsc::*;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        eprintln!($($arg)*);
+    };
+}
+
 #[derive(Debug)]
 pub enum Event {
     Key {
@@ -27,6 +35,39 @@ pub enum Event {
     Unknown,
 }
 
+fn handle_event(event: InputEvent) -> Event {
+    let delta = event.value(); // also serves as key state
+    let code = event.code();
+
+    return match event.event_type() {
+        EventType::KEY => {
+            let act = delta; // "action"
+            // 1 = down, 2 == repeating
+            return Event::Key {
+                code: code,
+                state: act == 1 || act == 2,
+            };
+        }
+        EventType::RELATIVE => {
+            return match code {
+                0 => Event::Mouse { x: delta, y: 0 },  // mouse horizontal
+                1 => Event::Mouse { x: 0, y: delta },  // mouse vertical
+                6 => Event::Scroll { x: delta, y: 0 }, // horizonal scroll
+                8 => Event::Scroll { x: 0, y: delta }, // vertical scroll
+                _ => Event::Unknown,
+            };
+        }
+        EventType::ABSOLUTE => {
+            return match AbsoluteAxisCode(code) {
+                AbsoluteAxisCode::ABS_X => Event::Mouse { x: delta, y: 0 },
+                AbsoluteAxisCode::ABS_Y => Event::Mouse { x: 0, y: delta },
+                _ => Event::Unknown,
+            };
+        }
+        _ => Event::Unknown,
+    };
+}
+
 fn open_device(tx: Sender<Event>, seat: &mut SeatRef, path: PathBuf) {
     let file = seat.open_device(&path).expect("failed to open device");
     let new = dup(&file.as_fd()).expect("failed to dup fd");
@@ -34,7 +75,7 @@ fn open_device(tx: Sender<Event>, seat: &mut SeatRef, path: PathBuf) {
 
     thread::spawn(move || {
         let mut device = Device::from_fd(new).expect("failed to create device");
-        println!(
+        log!(
             "connected to input device: {}",
             device.name().unwrap_or("Unknown")
         );
@@ -43,65 +84,15 @@ fn open_device(tx: Sender<Event>, seat: &mut SeatRef, path: PathBuf) {
             match device.fetch_events() {
                 Ok(events) => {
                     for event in events {
-                        println!(
+                        log!(
                             "Event received -> Type: {:?}, Code: {}, Value: {}",
                             event.event_type(),
                             event.code(),
                             event.value()
                         );
-                        match event.event_type() {
-                            EventType::KEY => {
-                                let act = event.value(); // "action"
-                                // 1 = down
-                                if act == 1 || act == 0 {
-                                    let packet = Event::Key {
-                                        code: event.code(),
-                                        state: act == 1,
-                                    };
-
-                                    if tx.send(packet).is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            EventType::ABSOLUTE => {
-                                let packet = match event.code() {
-                                    0 => {
-                                        // mouse horizontal
-                                        Event::Mouse {
-                                            x: event.value(),
-                                            y: 0,
-                                        }
-                                    }
-                                    1 => {
-                                        // mouse vertical
-                                        Event::Mouse {
-                                            x: 0,
-                                            y: event.value(),
-                                        }
-                                    }
-                                    6 => {
-                                        // horizonal scroll
-                                        Event::Scroll {
-                                            x: event.value(),
-                                            y: 0,
-                                        }
-                                    }
-                                    8 => {
-                                        // vertical scroll
-                                        Event::Scroll {
-                                            x: 0,
-                                            y: event.value(),
-                                        }
-                                    }
-                                    _ => Event::Unknown,
-                                };
-
-                                if tx.send(packet).is_err() {
-                                    break;
-                                }
-                            }
-                            _ => (),
+                        let packet = handle_event(event);
+                        if tx.send(packet).is_err() {
+                            break;
                         }
                     }
                 }
@@ -123,7 +114,7 @@ pub fn init() -> Result<Receiver<Event>> {
         let mut seat = match Seat::open(move |seat, event| {
             match event {
                 SeatEvent::Enable => {
-                    println!("libseat session active");
+                    log!("libseat session active");
 
                     for (path, name) in enumerate() {
                         // gets /dev/input devices
@@ -131,21 +122,21 @@ pub fn init() -> Result<Receiver<Event>> {
                     }
                 }
                 SeatEvent::Disable => {
-                    println!("libseat session paused");
+                    log!("libseat session paused");
                     seat.disable().ok();
                 }
             }
         }) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("failed to open libseat: {}", e);
+                log!("failed to open libseat: {}", e);
                 return;
             }
         };
 
         loop {
             if let Err(e) = seat.dispatch(-1) {
-                eprintln!("libseat dispatch error: {}", e);
+                log!("libseat dispatch error: {}", e);
                 break;
             }
         }
