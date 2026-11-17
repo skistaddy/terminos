@@ -1,25 +1,27 @@
 use evdev::*;
 use libseat::{Seat, SeatEvent, SeatRef};
-use rustix::fd::AsFd;
-use rustix::io::*;
+use mio::unix::SourceFd;
+use mio::{Events, Interest, Poll, Token};
+use rustix::fd::{AsFd, OwnedFd};
+use rustix::io::dup;
+use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
+use std::io::ErrorKind;
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::mpsc::*;
 use std::thread;
-use std::time::{Duration, Instant};
 
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        {
+        if cfg!(debug_assertions) {
             use std::io::Write;
             let msg = format!($($arg)*);
             let formatted = msg.replace("\n", "\r\n");
             let mut stderr = std::io::stderr();
             let _ = writeln!(stderr, "{}", formatted);
-            let _ = stderr.flush(); // Force immediate write to the raw terminal stream
+            let _ = stderr.flush();
         }
     };
 }
@@ -74,61 +76,111 @@ fn handle_event(event: InputEvent) -> Event {
     };
 }
 
-fn open_device(tx: Sender<Event>, seat: &mut SeatRef, path: PathBuf) {
-    let file = seat.open_device(&path).expect("failed to open device");
-    let new = dup(&file.as_fd()).expect("failed to dup fd");
-    fcntl_setfd(&new, FdFlags::empty()).expect("failed to set blocking mode");
+// converts libseat device to evdev device
+fn convert(path: libseat::Device) -> Option<Device> {
+    match dup(&path.as_fd()) {
+        Ok(file) => match evdev::Device::from_fd(file) {
+            Ok(mut device) => Some(device),
+            Err(e) => {
+                log!("failed to create device from fd: {}", e);
+                None
+            }
+        },
+        Err(e) => {
+            log!("failed to dup fd: {}", e);
+            None
+        }
+    }
+}
 
-    thread::spawn(move || {
-        let mut device = Device::from_fd(new).expect("failed to create device");
-        log!(
-            "connected to input device: {}",
-            device.name().unwrap_or("Unknown")
-        );
+fn register(poll: &Poll, seat: &mut SeatRef) -> Vec<Device> {
+    let mut devices = Vec::<Device>::new();
 
-        loop {
-            match device.fetch_events() {
-                Ok(events) => {
-                    for event in events {
-                        log!(
-                            "Event received -> Type: {:?}, Code: {}, Value: {}",
-                            event.event_type(),
-                            event.code(),
-                            event.value()
-                        );
-                        let packet = handle_event(event);
-                        if tx.send(packet).is_err() {
-                            break;
+    for (path, info) in enumerate() {
+        let name = info.name().unwrap_or("Unknown");
+
+        match seat.open_device(&path) {
+            Ok(file) => {
+                if let Some(mut device) = convert(file) {
+                    let token = Token(devices.len()); // token maps to devices index
+                    let raw = device.as_raw_fd();
+                    let mut source = SourceFd(&raw);
+
+                    log!(
+                        "connected to input device: {}",
+                        device.name().unwrap_or("Unknown")
+                    );
+
+                    match poll
+                        .registry()
+                        .register(&mut source, token, Interest::READABLE)
+                    {
+                        Ok(()) => {
+                            log!("poll registered device: {}", raw);
+                            devices.push(device);
+                        }
+                        Err(e) => {
+                            log!("poll failed to register device {}", e);
+                            continue;
                         }
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(_) => {
-                    break;
+            }
+            Err(e) => log!("failed to create device from file: {}", e),
+        }
+    }
+    devices
+}
+
+fn init_poll(tx: Sender<Event>, seat: &mut SeatRef) {
+    log!("libseat session active");
+    let mut poll = match Poll::new() {
+        Ok(p) => p,
+        Err(e) => {
+            log!("failed to create poll: {}", e);
+            return;
+        }
+    };
+
+    let mut events = Events::with_capacity(128);
+    let mut devices = register(&poll, seat);
+
+    loop {
+        if let Err(e) = poll.poll(&mut events, None) {
+            log!("poll errror: {}", e);
+            break;
+        }
+
+        for event in events.iter() {
+            let index = event.token().0;
+
+            if let Some(device) = devices.get_mut(index) {
+                match device.fetch_events() {
+                    Ok(packets) => {
+                        for p in packets {
+                            if tx.send(handle_event(p)).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => continue,
+                    Err(_) => {
+                        break;
+                    }
                 }
             }
         }
-    });
+    }
 }
 
-pub fn init() -> Result<Receiver<Event>> {
+pub fn init() -> Result<Receiver<Event>, Box<dyn Error>> {
     let (tx, rx) = channel();
 
     thread::spawn(move || {
         let mut seat = match Seat::open(move |seat, event| {
-            println!("hi");
-
+            log!("libseat opened");
             match event {
-                SeatEvent::Enable => {
-                    log!("libseat session active");
-
-                    for (path, _) in enumerate() {
-                        // gets /dev/input devices
-                        open_device(tx.clone(), seat, path);
-                    }
-                }
+                SeatEvent::Enable => init_poll(tx.clone(), seat),
                 SeatEvent::Disable => {
                     log!("libseat session paused");
                     seat.disable().ok();

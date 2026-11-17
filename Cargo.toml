@@ -10,6 +10,7 @@ evdev = "0.13.2"
 font8x8 = "0.3.1"
 image = "0.25.10"
 libseat = "0.2.4"
+mio = { version = "1.2.5", features = ["os-ext", "os-poll"] }
 rustix = { version = "1.0", features = ["fs"] }
 
 [lints.cargo]
