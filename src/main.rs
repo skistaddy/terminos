@@ -1,10 +1,11 @@
 #![allow(unused_imports)]
 #![allow(unused)]
 
+mod app;
 mod canvas;
 mod input;
+
 use clap::Parser;
-use input::*;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -19,56 +20,38 @@ struct Args {
     /// Starts debugging session
     #[arg(short, long)]
     debug: bool,
-
-    /// Starts input test
-    #[arg(short, long)]
-    input: bool,
 }
 
-fn input_test(events: Receiver<Event>) {
-    for event in events {
-        match event {
-            Event::Key { code, state } => {
-                if code == 1 {
-                    break;
-                }
-                let status = if state { "down" } else { "up" };
-                log!("key: {code} {status}");
-            }
-            Event::Mouse { x, y } => {
-                log!("mouse changed: {x}, {y}");
-            }
-            Event::Scroll { x, y } => {
-                log!("scrolled: {x}, {y}");
-            }
-            Event::Unknown => {}
-        }
-    }
-}
+// fn input_test(events: Receiver<Event>) {
+//     for event in events {
+//         match event {
+//             Event::Key { code, state } => {
+//                 if code == 1 {
+//                     break;
+//                 }
+//                 let status = if state { "down" } else { "up" };
+//                 log!("key: {code} {status}");
+//             }
+//             Event::Mouse { x, y } => {
+//                 log!("mouse changed: {x}, {y}");
+//             }
+//             Event::Scroll { x, y } => {
+//                 log!("scrolled: {x}, {y}");
+//             }
+//             Event::Unknown => {}
+//         }
+//     }
+// }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    let events = input::init()?;
+    // if args.input {
+    //     println!("starting input test");
+    //     input_test(events);
+    //     return Ok(());
+    // }
 
-    if args.input {
-        println!("starting input test");
-        input_test(events);
-        return Ok(());
-    }
-
-    //canvas::init();
-
-    for event in events {
-        match event {
-            Event::Key { code, state } => {
-                if code == 1 {
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(())
+    app::App::init(true)
+    // app::App::init(args.debug)
 }

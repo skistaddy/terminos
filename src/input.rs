@@ -1,3 +1,4 @@
+use crate::app::*;
 use evdev::*;
 use libseat::{Seat, SeatEvent, SeatRef};
 use mio::unix::SourceFd;
@@ -12,37 +13,6 @@ use std::path::PathBuf;
 use std::sync::mpsc::*;
 use std::thread;
 
-#[macro_export]
-macro_rules! log {
-    ($($arg:tt)*) => {
-        if cfg!(debug_assertions) {
-            use std::io::Write;
-            let msg = format!($($arg)*);
-            let formatted = msg.replace("\n", "\r\n");
-            let mut stderr = std::io::stderr();
-            let _ = writeln!(stderr, "{}", formatted);
-            let _ = stderr.flush();
-        }
-    };
-}
-
-#[derive(Debug)]
-pub enum Event {
-    Key {
-        code: u16,
-        state: bool, // true = down, false = up
-    },
-    Mouse {
-        x: i32,
-        y: i32,
-    },
-    Scroll {
-        x: i32,
-        y: i32,
-    },
-    Unknown,
-}
-
 fn handle_event(event: InputEvent) -> Event {
     let delta = event.value(); // also serves as key state
     let code = event.code();
@@ -50,7 +20,7 @@ fn handle_event(event: InputEvent) -> Event {
     return match event.event_type() {
         EventType::KEY => {
             let act = delta; // "action"
-            // 1 = down, 2 == repeating
+            // 1 = down, 2 = repeating, 0 = up
             return Event::Key {
                 code: code,
                 state: act == 1 || act == 2,
@@ -77,23 +47,23 @@ fn handle_event(event: InputEvent) -> Event {
 }
 
 // converts libseat device to evdev device
-fn convert(path: libseat::Device) -> Option<Device> {
+fn convert(path: libseat::Device, tx: Sender<Event>) -> Option<Device> {
     match dup(&path.as_fd()) {
         Ok(file) => match evdev::Device::from_fd(file) {
             Ok(mut device) => Some(device),
             Err(e) => {
-                log!("failed to create device from fd: {}", e);
+                tx.log(format!("failed to create device from fd: {}", e));
                 None
             }
         },
         Err(e) => {
-            log!("failed to dup fd: {}", e);
+            tx.log(format!("failed to dup fd: {}", e));
             None
         }
     }
 }
 
-fn register(poll: &Poll, seat: &mut SeatRef) -> Vec<Device> {
+fn register(poll: &Poll, seat: &mut SeatRef, tx: Sender<Event>) -> Vec<Device> {
     let mut devices = Vec::<Device>::new();
 
     for (path, info) in enumerate() {
@@ -101,53 +71,67 @@ fn register(poll: &Poll, seat: &mut SeatRef) -> Vec<Device> {
 
         match seat.open_device(&path) {
             Ok(file) => {
-                if let Some(mut device) = convert(file) {
+                if let Some(mut device) = convert(file, tx.clone()) {
                     let token = Token(devices.len()); // token maps to devices index
                     let raw = device.as_raw_fd();
                     let mut source = SourceFd(&raw);
 
-                    log!(
+                    tx.log(format!(
                         "connected to input device: {}",
                         device.name().unwrap_or("Unknown")
-                    );
+                    ));
 
                     match poll
                         .registry()
                         .register(&mut source, token, Interest::READABLE)
                     {
                         Ok(()) => {
-                            log!("poll registered device: {}", raw);
+                            tx.log(format!("poll registered device: {}", raw));
                             devices.push(device);
                         }
                         Err(e) => {
-                            log!("poll failed to register device {}", e);
+                            tx.log(format!("poll failed to register device {}", e));
                             continue;
                         }
                     }
                 }
             }
-            Err(e) => log!("failed to create device from file: {}", e),
+            Err(e) => tx.log(format!("failed to create device from file: {}", e)),
         }
     }
     devices
 }
 
+use rustix::fs::{Mode, OFlags, open};
+use rustix::ioctl::{IntegerSetter, ioctl};
+
+fn force_text_mode() -> rustix::io::Result<()> {
+    const KDSETMODE: rustix::ioctl::Opcode = 0x4B3A;
+    const KD_TEXT: usize = 0;
+
+    let tty = open("/dev/tty", OFlags::RDWR, Mode::empty())?;
+    unsafe { ioctl(&tty, IntegerSetter::<KDSETMODE>::new_usize(KD_TEXT)) }
+}
+
 fn init_poll(tx: Sender<Event>, seat: &mut SeatRef) {
-    log!("libseat session active");
+    if crate::app::debug() {
+        force_text_mode();
+    }
+    tx.log("libseat session active");
     let mut poll = match Poll::new() {
         Ok(p) => p,
         Err(e) => {
-            log!("failed to create poll: {}", e);
+            tx.log(format!("failed to create poll: {}", e));
             return;
         }
     };
 
     let mut events = Events::with_capacity(128);
-    let mut devices = register(&poll, seat);
+    let mut devices = register(&poll, seat, tx.clone());
 
     loop {
         if let Err(e) = poll.poll(&mut events, None) {
-            log!("poll errror: {}", e);
+            tx.log(format!("poll error: {}", e));
             break;
         }
 
@@ -173,34 +157,34 @@ fn init_poll(tx: Sender<Event>, seat: &mut SeatRef) {
     }
 }
 
-pub fn init() -> Result<Receiver<Event>, Box<dyn Error>> {
-    let (tx, rx) = channel();
-
+pub fn init(tx: Sender<Event>) -> Result<(), Box<dyn Error>> {
     thread::spawn(move || {
+        let og_tx = tx.clone(); // tx is borrowed by the thread below
+
         let mut seat = match Seat::open(move |seat, event| {
-            log!("libseat opened");
+            tx.log("libseat opened");
             match event {
                 SeatEvent::Enable => init_poll(tx.clone(), seat),
                 SeatEvent::Disable => {
-                    log!("libseat session paused");
+                    tx.log("libseat session paused");
                     seat.disable().ok();
                 }
             }
         }) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("failed to open libseat: {}", e);
+                og_tx.log(format!("failed to open libseat: {}", e));
                 return;
             }
         };
 
         loop {
             if let Err(e) = seat.dispatch(-1) {
-                log!("libseat dispatch error: {}", e);
+                og_tx.log(format!("libseat dispatch error: {}", e));
                 break;
             }
         }
     });
 
-    return Ok(rx);
+    Ok(())
 }
