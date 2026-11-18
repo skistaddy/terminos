@@ -1,11 +1,36 @@
-# terminos
-a deadly fast, drop-in TTY replacement suite
+# terminOS
+a deadly fast, terminal-native desktop environment for Linux.
 
-# dev
-test DRI card can be started with
-```sudo modprobe vkms```
-and killed with
-```sudo modprobe -r vkms```
+terminOS replaces the Linux console with a modern, pixel-capable terminal
+running straight on DRM, with no X11 or Wayland underneath. On top of it
+sits an ecosystem of programs that make the console feel like a full OS.
 
-# debug
-- program can fail if seat manager (`logind`) fails for some reason. either start in a new tty or reboot computer.
+## status
+early and unstable. right now: input handling via libseat + evdev.
+the DRM canvas is not wired up yet.
+
+## goals
+- drop-in replacement for the Linux TTY
+- real fonts, full color, Unicode
+- session management: multiple shells, switching, splits
+- native pixel graphics 
+- an open ecosystem of terminOS programs
+
+## non-goals
+- being a kernel: terminOS runs on Linux
+- embedding a browser engine or Wayland compositor in the core
+
+## dev
+start a virtual test display (vkms) with
+`sudo modprobe vkms`
+and remove it with
+`sudo modprobe -r vkms
+
+run with debug logging (`-d`) and send logs off-screen, since the
+terminal is taken over:
+`./target/debug/terminos -d > /tmp/terminos.log 2>&1`
+then `tail -f /tmp/terminos.log` from SSH or another terminal.
+
+## troubleshoot
+- startup can fail if the seat manager (`logind`) errors. switch to a fresh
+  terminal or reboot.

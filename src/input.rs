@@ -52,12 +52,12 @@ fn convert(path: libseat::Device, tx: Sender<Event>) -> Option<Device> {
         Ok(file) => match evdev::Device::from_fd(file) {
             Ok(mut device) => Some(device),
             Err(e) => {
-                tx.log(format!("failed to create device from fd: {}", e));
+                tx.debug(format!("failed to create device from fd: {}", e));
                 None
             }
         },
         Err(e) => {
-            tx.log(format!("failed to dup fd: {}", e));
+            tx.debug(format!("failed to dup fd: {}", e));
             None
         }
     }
@@ -76,7 +76,7 @@ fn register(poll: &Poll, seat: &mut SeatRef, tx: Sender<Event>) -> Vec<Device> {
                     let raw = device.as_raw_fd();
                     let mut source = SourceFd(&raw);
 
-                    tx.log(format!(
+                    tx.debug(format!(
                         "connected to input device: {}",
                         device.name().unwrap_or("Unknown")
                     ));
@@ -86,17 +86,17 @@ fn register(poll: &Poll, seat: &mut SeatRef, tx: Sender<Event>) -> Vec<Device> {
                         .register(&mut source, token, Interest::READABLE)
                     {
                         Ok(()) => {
-                            tx.log(format!("poll registered device: {}", raw));
+                            tx.debug(format!("poll registered device: {}", raw));
                             devices.push(device);
                         }
                         Err(e) => {
-                            tx.log(format!("poll failed to register device {}", e));
+                            tx.debug(format!("poll failed to register device {}", e));
                             continue;
                         }
                     }
                 }
             }
-            Err(e) => tx.log(format!("failed to create device from file: {}", e)),
+            Err(e) => tx.debug(format!("failed to create device from file: {}", e)),
         }
     }
     devices
@@ -114,14 +114,14 @@ fn force_text_mode() -> rustix::io::Result<()> {
 }
 
 fn init_poll(tx: Sender<Event>, seat: &mut SeatRef) {
-    if crate::app::debug() {
+    if debug() || tty() {
         force_text_mode();
     }
-    tx.log("libseat session active");
+    tx.debug("libseat session active");
     let mut poll = match Poll::new() {
         Ok(p) => p,
         Err(e) => {
-            tx.log(format!("failed to create poll: {}", e));
+            tx.debug(format!("failed to create poll: {}", e));
             return;
         }
     };
@@ -131,7 +131,7 @@ fn init_poll(tx: Sender<Event>, seat: &mut SeatRef) {
 
     loop {
         if let Err(e) = poll.poll(&mut events, None) {
-            tx.log(format!("poll error: {}", e));
+            tx.debug(format!("poll error: {}", e));
             break;
         }
 
@@ -162,25 +162,25 @@ pub fn init(tx: Sender<Event>) -> Result<(), Box<dyn Error>> {
         let og_tx = tx.clone(); // tx is borrowed by the thread below
 
         let mut seat = match Seat::open(move |seat, event| {
-            tx.log("libseat opened");
+            tx.debug("libseat opened");
             match event {
                 SeatEvent::Enable => init_poll(tx.clone(), seat),
                 SeatEvent::Disable => {
-                    tx.log("libseat session paused");
+                    tx.debug("libseat session paused");
                     seat.disable().ok();
                 }
             }
         }) {
             Ok(s) => s,
             Err(e) => {
-                og_tx.log(format!("failed to open libseat: {}", e));
+                og_tx.debug(format!("failed to open libseat: {}", e));
                 return;
             }
         };
 
         loop {
             if let Err(e) = seat.dispatch(-1) {
-                og_tx.log(format!("libseat dispatch error: {}", e));
+                og_tx.debug(format!("libseat dispatch error: {}", e));
                 break;
             }
         }

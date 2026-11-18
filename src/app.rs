@@ -1,5 +1,8 @@
+use crate::args::Args;
 use crate::canvas;
 use crate::input;
+use crate::test;
+
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -28,65 +31,82 @@ pub enum Event {
         y: i32,
     },
     Log(String),
+    Debug(String),
     Unknown,
 }
 
-pub struct App {
-    pub debug: bool,
-    tx: Sender<Event>,
-    rx: Receiver<Event>,
-}
-
 static DEBUG: AtomicBool = AtomicBool::new(false);
-
 pub fn debug() -> bool {
     DEBUG.load(Relaxed)
 }
 
+static TTY: AtomicBool = AtomicBool::new(false);
+pub fn tty() -> bool {
+    TTY.load(Relaxed)
+}
+
+pub struct App {
+    pub tx: Sender<Event>,
+    pub rx: Receiver<Event>,
+}
+
 impl App {
-    fn send(&self, event: Event) {
+    pub fn send(&self, event: Event) {
         if self.tx.send(event).is_err() {
             return;
         }
     }
 
-    fn log(&self, string: impl Into<String>) {
-        if self.debug {
+    pub fn log(&self, string: impl Into<String>) {
+        log!("{}", string.into());
+    }
+
+    pub fn debug(&self, string: impl Into<String>) {
+        if debug() {
             log!("{}", string.into());
         }
     }
 
-    pub fn init(debug: bool) -> Result<(), Box<dyn Error>> {
-        DEBUG.store(debug, Relaxed);
+    pub fn init() -> Result<Self, Box<dyn Error>> {
         let (tx, rx) = channel();
-        let mut app = Self { debug, tx, rx };
-        input::init(app.tx.clone())?;
+        input::init(tx.clone());
+        Ok(Self { tx, rx })
+    }
 
-        while let Ok(event) = app.rx.recv() {
-            match event {
-                Event::Key { code, state } => {
-                    if code == 1 {
-                        break;
-                    }
-                    app.log(format!("{}", code));
-                }
-                Event::Log(string) => {
-                    app.log(string);
-                }
-                _ => {}
+    pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
+        DEBUG.store(args.debug, Relaxed);
+
+        let app = match Self::init() {
+            Ok(a) => a,
+            Err(e) => {
+                log!("startup error: {e}");
+                return Err(e);
             }
+        };
+
+        if args.input_test {
+            if debug() {
+                println!("debug active");
+            }
+            TTY.store(true, Relaxed);
+            log!("starting input test");
+            return test::input_events(app);
         }
 
         Ok(())
     }
 }
 
-pub trait SenderLog {
+// defines app log event used mpsc::channel
+pub trait SenderHelpers {
     fn log(&self, msg: impl Into<String>);
+    fn debug(&self, msg: impl Into<String>);
 }
-
-impl SenderLog for Sender<Event> {
+impl SenderHelpers for Sender<Event> {
     fn log(&self, msg: impl Into<String>) {
         let _ = self.send(Event::Log(msg.into()));
+    }
+    fn debug(&self, msg: impl Into<String>) {
+        let _ = self.send(Event::Debug(msg.into()));
     }
 }
