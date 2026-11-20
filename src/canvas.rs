@@ -27,7 +27,7 @@ pub struct Canvas {
     state: bool,
 }
 
-pub fn start(tx: Sender<Event>, fds: Vec<OwnedFd>) {
+pub fn connect(tx: Sender<Event>, fds: Vec<OwnedFd>) -> Vec<Screen> {
     let cards = fds.into_iter().map(|f| Card(f));
     let mut screens = Vec::<Screen>::new();
 
@@ -57,37 +57,24 @@ pub fn start(tx: Sender<Event>, fds: Vec<OwnedFd>) {
                     .expect("create framebuffer");
 
                 card.set_crtc(*crtc, Some(fb), (0, 0), &[handle], Some(*mode));
+
+                screens.push(Screen {
+                    card,
+                    db,
+                    fb,
+                    width,
+                    height,
+                })
             }
 
             None => tx.debug("card not connected"),
         }
-
-        // println!("{:?}", conn);
-        //
-        // let handle = conn.clone().unwrap_or(None).handle();
-        // let mode = conn.clone().unwrap_or(Info).modes().size();
-        // let crtc = res.clone().crtcs();
-        // let handle = conn.handle();
-        // let mode = *conn.modes().first().expect("no modes");
-        // let crtc = res.crtcs().first().expect("no CRTCs");
-        // let (w, h) = mode.size();
-        // let (width, height) = (w as u32, h as u32);
-        //
-        // let db = card
-        //     .create_dumb_buffer((width, height), DrmFourcc::Xrgb8888, 32)
-        //     .expect("3");
-        //
-        // let fb = card.add_framebuffer(&db, 24, 32).expect("4");
-        // card.set_crtc(*crtc, Some(fb), (0, 0), &[handle], Some(mode));
-        //
-        // screens.push(Screen {
-        //     card,
-        //     db,
-        //     fb,
-        //     width,
-        //     height,
-        // });
     }
+    screens
+}
+
+pub fn start(tx: Sender<Event>, fds: Vec<OwnedFd>) {
+    connect(tx, fds);
 }
 
 impl Canvas {
