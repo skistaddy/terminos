@@ -1,6 +1,6 @@
 use crate::app::*;
-use drm::buffer::DrmFourcc;
-use drm::control::{Device as ControlDevice, connector, dumbbuffer::DumbBuffer, framebuffer};
+use drm::buffer::{Buffer, DrmFourcc, Handle};
+use drm::control::{Device, connector, dumbbuffer::DumbBuffer, framebuffer};
 use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::error::Error;
 use std::sync::mpsc::{Receiver, Sender};
@@ -14,7 +14,11 @@ impl AsFd for Card {
 impl drm::Device for Card {}
 impl drm::control::Device for Card {}
 
-struct Screen {
+// comments represent the intended shape once connections are fully
+// iterated over. connection ~= monitor, crtc ~= output driver kinda
+struct Output {
+    //connector: connector::Handle
+    //crtc:: crtc::Handle
     card: Card,
     db: DumbBuffer,
     fb: framebuffer::Handle,
@@ -23,13 +27,13 @@ struct Screen {
 }
 
 pub struct Canvas {
-    screens: Vec<Screen>,
-    state: bool,
+    //cards: Vec<Card>
+    outputs: Vec<Output>,
 }
 
-pub fn connect(tx: Sender<Event>, fds: Vec<OwnedFd>) -> Vec<Screen> {
+pub fn connect(tx: Sender<Event>, fds: Vec<OwnedFd>) -> Vec<Output> {
     let cards = fds.into_iter().map(|f| Card(f));
-    let mut screens = Vec::<Screen>::new();
+    let mut screens = Vec::<Output>::new();
 
     for card in cards {
         let res = card.resource_handles().expect("no info");
@@ -58,7 +62,7 @@ pub fn connect(tx: Sender<Event>, fds: Vec<OwnedFd>) -> Vec<Screen> {
 
                 card.set_crtc(*crtc, Some(fb), (0, 0), &[handle], Some(*mode));
 
-                screens.push(Screen {
+                screens.push(Output {
                     card,
                     db,
                     fb,
@@ -73,16 +77,22 @@ pub fn connect(tx: Sender<Event>, fds: Vec<OwnedFd>) -> Vec<Screen> {
     screens
 }
 
-pub fn start(tx: Sender<Event>, fds: Vec<OwnedFd>) {
-    connect(tx, fds);
-}
-
 impl Canvas {
-    // pub fn fill(&mut self, rgb: u32) -> Result<(), Box<dyn Error>> {
-    //     let mut map = self.card.map_dumb_buffer(&mut self.db)?;
-    //     for px in map.as_mut().chunks_exact_mut(4) {
-    //         px.copy_from_slice(&rgb.to_le_bytes()); // 0x00RRGGBB
-    //     }
-    //     Ok(())
-    // }
+    pub fn new() -> Canvas {
+        return Self {
+            outputs: Vec::<Output>::new(),
+        };
+    }
+
+    pub fn start(tx: Sender<Event>, fds: Vec<OwnedFd>) -> Canvas {
+        let outputs = connect(tx, fds);
+        return Self { outputs };
+    }
+
+    pub fn release(&self) {
+        for output in self.outputs.iter() {
+            let handle = output.db.handle();
+            output.card.close_buffer(handle);
+        }
+    }
 }

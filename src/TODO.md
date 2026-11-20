@@ -6,3 +6,5 @@
 # misc
 - TTY crashes before any input is even registered
 - need to handle errors better for any `.expect()`'s
+  - means expaning them into full match statements
+- need to iterate over DRM card connections in `canvas::connect()`, that's how one offers multi-monitor support

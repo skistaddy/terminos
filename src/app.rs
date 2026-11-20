@@ -91,14 +91,18 @@ impl App {
         TTY.store(args.input_test, Relaxed);
 
         let app = Self::init()?;
+        let mut canvas = crate::canvas::Canvas::new();
 
         while let Ok(event) = app.rx.recv() {
             match event {
                 Event::Start { cards, inputs } => {
                     crate::input::catch(app.tx.clone(), inputs);
-                    crate::canvas::start(app.tx.clone(), cards);
+                    canvas = crate::canvas::Canvas::start(app.tx.clone(), cards);
                 }
-                Event::Key { code: 1, .. } => break, // esc
+                Event::Key { code: 1, .. } => {
+                    canvas.release();
+                    break;
+                }
                 Event::Debug(m) => app.debug(m),
                 Event::Log(m) => app.log(m),
                 e if tty() => app.log(format!("{e:?}")), // input test output
