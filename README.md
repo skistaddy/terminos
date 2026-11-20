@@ -16,10 +16,6 @@ the DRM canvas is not wired up yet.
 - native pixel graphics 
 - an open ecosystem of terminOS programs
 
-## non-goals
-- being a kernel: terminOS runs on Linux
-- embedding a browser engine or Wayland compositor in the core
-
 ## dev
 start a virtual test display (vkms) with
 `sudo modprobe vkms`

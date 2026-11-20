@@ -5,6 +5,7 @@ mod app;
 mod args;
 mod canvas;
 mod input;
+mod session;
 mod test;
 
 use crate::args::Args;

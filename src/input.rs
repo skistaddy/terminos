@@ -5,7 +5,6 @@ use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use rustix::fd::{AsFd, OwnedFd};
 use rustix::io::dup;
-use std::collections::HashMap;
 use std::error::Error;
 use std::io::ErrorKind;
 use std::os::unix::io::AsRawFd;
@@ -102,22 +101,32 @@ fn register(poll: &Poll, seat: &mut SeatRef, tx: Sender<Event>) -> Vec<Device> {
     devices
 }
 
-use rustix::fs::{Mode, OFlags, open};
-use rustix::ioctl::{IntegerSetter, ioctl};
+fn poll_register(tx: Sender<Event>, devices: &Vec<Device>, poll: &Poll) {
+    for (i, device) in devices.iter().enumerate() {
+        let token = Token(i); // token maps to devices index
+        let mut source = SourceFd(&device.as_raw_fd());
 
-fn force_text_mode() -> rustix::io::Result<()> {
-    const KDSETMODE: rustix::ioctl::Opcode = 0x4B3A;
-    const KD_TEXT: usize = 0;
-
-    let tty = open("/dev/tty", OFlags::RDWR, Mode::empty())?;
-    unsafe { ioctl(&tty, IntegerSetter::<KDSETMODE>::new_usize(KD_TEXT)) }
+        match poll
+            .registry()
+            .register(&mut source, token, Interest::READABLE)
+        {
+            Ok(()) => {
+                tx.debug(format!(
+                    "input: connected to device: {}",
+                    device.name().unwrap_or("Unknown")
+                ));
+            }
+            Err(e) => {
+                tx.debug(format!(
+                    "input: failed to connect to device: {}",
+                    device.name().unwrap_or("Unknown")
+                ));
+            }
+        }
+    }
 }
 
-fn init_poll(tx: Sender<Event>, seat: &mut SeatRef) {
-    if debug() || tty() {
-        force_text_mode();
-    }
-    tx.debug("libseat session active");
+fn init_poll(tx: Sender<Event>, mut devices: Vec<evdev::Device>) {
     let mut poll = match Poll::new() {
         Ok(p) => p,
         Err(e) => {
@@ -127,7 +136,7 @@ fn init_poll(tx: Sender<Event>, seat: &mut SeatRef) {
     };
 
     let mut events = Events::with_capacity(128);
-    let mut devices = register(&poll, seat, tx.clone());
+    poll_register(tx.clone(), &devices, &poll);
 
     loop {
         if let Err(e) = poll.poll(&mut events, None) {
@@ -148,42 +157,20 @@ fn init_poll(tx: Sender<Event>, seat: &mut SeatRef) {
                         }
                     }
                     Err(e) if e.kind() == ErrorKind::WouldBlock => continue,
-                    Err(_) => {
-                        break;
-                    }
+                    Err(_) => return,
                 }
             }
         }
     }
 }
 
-pub fn init(tx: Sender<Event>) -> Result<(), Box<dyn Error>> {
+pub fn catch(tx: Sender<Event>, mut devices: Vec<Device>) -> Result<(), Box<dyn Error>> {
     thread::spawn(move || {
-        let og_tx = tx.clone(); // tx is borrowed by the thread below
-
-        let mut seat = match Seat::open(move |seat, event| {
-            tx.debug("libseat opened");
-            match event {
-                SeatEvent::Enable => init_poll(tx.clone(), seat),
-                SeatEvent::Disable => {
-                    tx.debug("libseat session paused");
-                    seat.disable().ok();
-                }
-            }
-        }) {
-            Ok(s) => s,
-            Err(e) => {
-                og_tx.debug(format!("failed to open libseat: {}", e));
-                return;
-            }
-        };
-
-        loop {
-            if let Err(e) = seat.dispatch(-1) {
-                og_tx.debug(format!("libseat dispatch error: {}", e));
-                break;
-            }
+        if debug() || tty() {
+            force_tty();
         }
+
+        init_poll(tx.clone(), devices);
     });
 
     Ok(())

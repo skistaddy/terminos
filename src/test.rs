@@ -8,7 +8,10 @@ pub fn input_events(app: App) -> Result<(), Box<dyn Error>> {
                 if code == 1 {
                     break;
                 }
-                app.log(format!("{}", code));
+                app.log(format!("key: {code}"));
+            }
+            Event::Mouse { x, y } => {
+                app.log(format!("mouse: {x}, {y}"));
             }
             Event::Log(string) => {
                 app.log(string);
