@@ -1,62 +1,48 @@
-use crate::app::*;
-use evdev::*;
-use libseat::{Seat, SeatEvent, SeatRef};
-use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token};
-use rustix::fd::{AsFd, OwnedFd};
-use rustix::io::dup;
-use std::error::Error;
-use std::io::ErrorKind;
-use std::os::unix::io::AsRawFd;
-use std::path::PathBuf;
-use std::sync::mpsc::*;
-use std::thread;
+use crate::imports::*;
 
 fn handle_event(event: InputEvent) -> Event {
     let delta = event.value(); // also serves as key state
     let code = event.code();
 
-    return match event.event_type() {
+    match event.event_type() {
         EventType::KEY => {
             let act = delta; // "action"
             // 1 = down, 2 = repeating, 0 = up
-            return Event::Key {
+            Event::Key {
                 code: code,
                 state: act == 1 || act == 2,
-            };
+            }
         }
         EventType::RELATIVE => {
-            return match code {
-                0 => Event::Mouse { x: delta, y: 0 },  // mouse horizontal
-                1 => Event::Mouse { x: 0, y: delta },  // mouse vertical
+            match code {
+                0 => Event::Mouse { x: delta, y: 0 }, // mouse horizontal
+                1 => Event::Mouse { x: 0, y: delta }, // mouse vertical
                 6 => Event::Scroll { x: delta, y: 0 }, // horizonal scroll
                 8 => Event::Scroll { x: 0, y: delta }, // vertical scroll
                 _ => Event::Unknown,
-            };
+            }
         }
-        EventType::ABSOLUTE => {
-            return match AbsoluteAxisCode(code) {
-                AbsoluteAxisCode::ABS_X => Event::Mouse { x: delta, y: 0 },
-                AbsoluteAxisCode::ABS_Y => Event::Mouse { x: 0, y: delta },
-                _ => Event::Unknown,
-            };
-        }
+        EventType::ABSOLUTE => match AbsoluteAxisCode(code) {
+            AbsoluteAxisCode::ABS_X => Event::Mouse { x: delta, y: 0 },
+            AbsoluteAxisCode::ABS_Y => Event::Mouse { x: 0, y: delta },
+            _ => Event::Unknown,
+        },
         _ => Event::Unknown,
-    };
+    }
 }
 
 // converts libseat device to evdev device
-fn convert(path: libseat::Device, tx: Sender<Event>) -> Option<Device> {
+fn convert(path: SeatDevice, tx: Sender<Event>) -> Option<Device> {
     match dup(&path.as_fd()) {
         Ok(file) => match evdev::Device::from_fd(file) {
             Ok(mut device) => Some(device),
             Err(e) => {
-                tx.debug(format!("failed to create device from fd: {}", e));
+                log!(tx, "failed to create device from fd: {e}");
                 None
             }
         },
         Err(e) => {
-            tx.debug(format!("failed to dup fd: {}", e));
+            log!("failed to dup fd: {e}");
             None
         }
     }
@@ -75,27 +61,31 @@ fn register(poll: &Poll, seat: &mut SeatRef, tx: Sender<Event>) -> Vec<Device> {
                     let raw = device.as_raw_fd();
                     let mut source = SourceFd(&raw);
 
-                    tx.debug(format!(
+                    log!(
+                        tx,
                         "connected to input device: {}",
                         device.name().unwrap_or("Unknown")
-                    ));
+                    );
 
-                    match poll
-                        .registry()
-                        .register(&mut source, token, Interest::READABLE)
-                    {
+                    match poll.registry().register(
+                        &mut source,
+                        token,
+                        Interest::READABLE,
+                    ) {
                         Ok(()) => {
-                            tx.debug(format!("poll registered device: {}", raw));
+                            log!(tx, "poll registered device: {device}",);
                             devices.push(device);
                         }
                         Err(e) => {
-                            tx.debug(format!("poll failed to register device {}", e));
+                            log!(tx, "poll failed to register device {e}");
                             continue;
                         }
                     }
                 }
             }
-            Err(e) => tx.debug(format!("failed to create device from file: {}", e)),
+            Err(e) => {
+                log!(tx, "failed to create device from file: {e}")
+            }
         }
     }
     devices
@@ -111,16 +101,18 @@ fn poll_register(tx: Sender<Event>, devices: &Vec<Device>, poll: &Poll) {
             .register(&mut source, token, Interest::READABLE)
         {
             Ok(()) => {
-                tx.debug(format!(
+                log!(
+                    tx,
                     "input: connected to device: {}",
                     device.name().unwrap_or("Unknown")
-                ));
+                );
             }
             Err(e) => {
-                tx.debug(format!(
+                log!(
+                    tx,
                     "input: failed to connect to device: {}",
                     device.name().unwrap_or("Unknown")
-                ));
+                );
             }
         }
     }
@@ -130,7 +122,7 @@ fn init_poll(tx: Sender<Event>, mut devices: Vec<evdev::Device>) {
     let mut poll = match Poll::new() {
         Ok(p) => p,
         Err(e) => {
-            tx.debug(format!("failed to create poll: {}", e));
+            log!(tx, "failed to create poll: {e}");
             return;
         }
     };
@@ -140,7 +132,7 @@ fn init_poll(tx: Sender<Event>, mut devices: Vec<evdev::Device>) {
 
     loop {
         if let Err(e) = poll.poll(&mut events, None) {
-            tx.debug(format!("poll error: {}", e));
+            log!(tx, "poll error: {}", e);
             break;
         }
 
@@ -164,8 +156,11 @@ fn init_poll(tx: Sender<Event>, mut devices: Vec<evdev::Device>) {
     }
 }
 
-pub fn catch(tx: Sender<Event>, mut devices: Vec<Device>) -> Result<(), Box<dyn Error>> {
-    thread::spawn(move || {
+pub fn catch(
+    tx: Sender<Event>,
+    mut devices: Vec<Device>,
+) -> Result<(), Box<dyn Error>> {
+    spawn(move || {
         if debug() || tty() {
             force_tty();
         }

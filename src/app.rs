@@ -1,27 +1,10 @@
-use crate::args::Args;
-
-use rustix::fd::{AsFd, OwnedFd};
-use std::error::Error;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use std::sync::mpsc::{Receiver, Sender, channel};
-
-#[macro_export]
-macro_rules! log {
-    ($($arg:tt)*) => {
-        if cfg!(debug_assertions) {
-            println!("{}", format!($($arg)*));
-        }
-    };
-}
-
-use rustix::fs::{Mode, OFlags, open};
-use rustix::ioctl::{IntegerSetter, ioctl};
+use crate::imports::*;
 
 pub fn force_tty() -> rustix::io::Result<()> {
     const KDSETMODE: rustix::ioctl::Opcode = 0x4B3A;
     const KD_TEXT: usize = 0;
 
-    let tty = open("/dev/tty", OFlags::RDWR, Mode::empty())?;
+    let tty = open("/dev/tty", OFlags::RDWR, fsMode::empty())?;
     unsafe { ioctl(&tty, IntegerSetter::<KDSETMODE>::new_usize(KD_TEXT)) }
 }
 
@@ -33,6 +16,31 @@ pub fn debug() -> bool {
 static TTY: AtomicBool = AtomicBool::new(false);
 pub fn tty() -> bool {
     TTY.load(Relaxed)
+}
+
+#[macro_export]
+macro_rules! log {
+    ($sender:expr, $($arg:tt)*) => {{
+        #[cfg(debug_assertions)]
+        {
+            let _ = ($sender).send(Event::Log(format!($($arg)*)));
+        }
+    }};
+    ($($arg:tt)*) => {{
+        #[cfg(debug_assertions)]
+        if debug() {
+            println!($($arg)*);
+        }
+    }};
+}
+
+pub struct Layer<'a> {
+    pub id: u64,
+    pub dst: Rect,
+    pub src_offset: (u32, u32),
+    pub z_order: i32,
+    pub visible: bool,
+    pub frame: Frame<'a>,
 }
 
 #[derive(Debug)]
@@ -54,6 +62,7 @@ pub enum Event {
         x: i32,
         y: i32,
     },
+    Flip(usize),
     Log(String),
     Debug(String),
     Unknown,
@@ -71,19 +80,9 @@ impl App {
         }
     }
 
-    pub fn log(&self, string: impl Into<String>) {
-        log!("{}", string.into());
-    }
-
-    pub fn debug(&self, string: impl Into<String>) {
-        if debug() {
-            log!("{}", string.into());
-        }
-    }
-
     pub fn init() -> Result<App, Box<dyn Error>> {
         let (tx, rx) = channel();
-        return crate::session::init(Self { tx, rx });
+        crate::session::init(Self { tx, rx })
     }
 
     pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
@@ -91,48 +90,41 @@ impl App {
         TTY.store(args.input_test, Relaxed);
 
         let app = Self::init()?;
-        let mut canvas = crate::canvas::Canvas::new();
+        let mut canvas = crate::canvas::Canvas::new(app.tx.clone());
+        let wait = std::time::Duration::from_millis(16);
 
-        while let Ok(event) = app.rx.recv() {
-            match event {
-                Event::Start { cards, inputs } => {
-                    crate::input::catch(app.tx.clone(), inputs);
-                    canvas = crate::canvas::Canvas::start(app.tx.clone(), cards);
+        loop {
+            let start = std::time::Instant::now();
+
+            loop {
+                match app.rx.try_recv() {
+                    Ok(Event::Start { cards, inputs }) => {
+                        crate::input::catch(app.tx.clone(), inputs);
+                        canvas.start(cards);
+                        canvas.paint(0);
+                    }
+                    Ok(Event::Key { code: 1, .. }) => {
+                        canvas.release();
+                        return Ok(());
+                    }
+                    Ok(Event::Debug(m)) => log!("{m:?}"),
+                    Ok(Event::Log(m)) => log!("{m:?}"),
+                    Ok(Event::Flip(op_id)) => {
+                        canvas.outputs[op_id].flipped();
+                    }
+                    Ok(e) if tty() => log!("{e:?}"),
+                    Ok(_) => {}
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        return Ok(());
+                    }
                 }
-                Event::Key { code: 1, .. } => {
-                    canvas.release();
-                    break;
-                }
-                Event::Debug(m) => app.debug(m),
-                Event::Log(m) => app.log(m),
-                e if tty() => app.log(format!("{e:?}")), // input test output
-                _ => {}
+            }
+
+            let remaining = wait.saturating_sub(start.elapsed());
+            if !remaining.is_zero() {
+                std::thread::sleep(remaining);
             }
         }
-
-        // if args.input_test {
-        //     if debug() {
-        //         println!("debug active");
-        //     }
-        //     TTY.store(true, Relaxed);
-        //     log!("starting input test");
-        //     return crate::test::input_events(app);
-        // }
-        //
-        Ok(())
-    }
-}
-
-// defines app log methods used by mpsc::channel
-pub trait SenderMethods {
-    fn log(&self, msg: impl Into<String>);
-    fn debug(&self, msg: impl Into<String>);
-}
-impl SenderMethods for Sender<Event> {
-    fn log(&self, msg: impl Into<String>) {
-        let _ = self.send(Event::Log(msg.into()));
-    }
-    fn debug(&self, msg: impl Into<String>) {
-        let _ = self.send(Event::Debug(msg.into()));
     }
 }

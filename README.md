@@ -30,3 +30,4 @@ then `tail -f /tmp/terminos.log` from SSH or another terminal.
 ## troubleshoot
 - startup can fail if the seat manager (`logind`) errors. switch to a fresh
   terminal or reboot.
+- seat session grant can fail inside of `tmux`. close the tmux session and find what the `XDG_SESSION_ID` of the tty is. run terminos with that value, i.e. `XDG_SESSION_ID=1 terminos`.
