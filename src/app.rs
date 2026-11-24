@@ -23,7 +23,8 @@ macro_rules! log {
     ($sender:expr, $($arg:tt)*) => {{
         #[cfg(debug_assertions)]
         {
-            let _ = ($sender).send(Event::Log(format!($($arg)*)));
+            let msg = format!($($arg)*);
+            let _ = ($sender).send(Event::Log(msg));
         }
     }};
     ($($arg:tt)*) => {{
@@ -32,15 +33,6 @@ macro_rules! log {
             println!($($arg)*);
         }
     }};
-}
-
-pub struct Layer<'a> {
-    pub id: u64,
-    pub dst: Rect,
-    pub src_offset: (u32, u32),
-    pub z_order: i32,
-    pub visible: bool,
-    pub frame: Frame<'a>,
 }
 
 #[derive(Debug)]
@@ -74,12 +66,6 @@ pub struct App {
 }
 
 impl App {
-    pub fn send(&self, event: Event) {
-        if self.tx.send(event).is_err() {
-            return;
-        }
-    }
-
     pub fn init() -> Result<App, Box<dyn Error>> {
         let (tx, rx) = channel();
         crate::session::init(Self { tx, rx })
@@ -87,7 +73,9 @@ impl App {
 
     pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         DEBUG.store(args.debug, Relaxed);
-        TTY.store(args.input_test, Relaxed);
+        TTY.store(args.text, Relaxed);
+
+        let mut msgs = vec![];
 
         let app = Self::init()?;
         let mut canvas = crate::canvas::Canvas::new(app.tx.clone());
@@ -101,16 +89,44 @@ impl App {
                     Ok(Event::Start { cards, inputs }) => {
                         crate::input::catch(app.tx.clone(), inputs);
                         canvas.start(cards);
-                        canvas.paint(0);
+                        let pixel: [u8; 4] = [0x80, 0x30, 0x1e, 0x00];
+
+                        let layer = Layer {
+                            id: 1,
+                            dst: Rect {
+                                x: 0,
+                                y: 0,
+                                w: canvas.outputs[0].width,
+                                h: canvas.outputs[0].height,
+                            },
+                            scroll: (0, 0),
+                            z: -1,
+                            visible: true,
+                            frame: Frame {
+                                data: FrameData {},
+                                damage: Damage::None,
+                            },
+                        };
+                        canvas.paint(0, &[layer]);
                     }
-                    Ok(Event::Key { code: 1, .. }) => {
+                    Ok(Event::Stop) => {
+                        if debug() {
+                            println!("{}", msgs.join("\n").to_string());
+                        }
                         canvas.release();
                         return Ok(());
                     }
+                    Ok(Event::Key { code: 1, .. }) => {
+                        app.tx.send(Event::Stop);
+                    }
                     Ok(Event::Debug(m)) => log!("{m:?}"),
-                    Ok(Event::Log(m)) => log!("{m:?}"),
+                    Ok(Event::Log(m)) => {
+                        msgs.push(m.clone());
+                        log!("{m:?}");
+                    }
                     Ok(Event::Flip(op_id)) => {
                         canvas.outputs[op_id].flipped();
+                        log!("flipped");
                     }
                     Ok(e) if tty() => log!("{e:?}"),
                     Ok(_) => {}

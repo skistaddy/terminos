@@ -161,7 +161,7 @@ pub fn catch(
     mut devices: Vec<Device>,
 ) -> Result<(), Box<dyn Error>> {
     spawn(move || {
-        if debug() || tty() {
+        if tty() {
             force_tty();
         }
 

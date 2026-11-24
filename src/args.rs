@@ -7,11 +7,11 @@ pub struct Args {
     #[arg(short, long)]
     pub config: Option<PathBuf>,
 
-    /// Starts debugging session
+    /// Shows debug messages
     #[arg(short, long)]
     pub debug: bool,
 
-    /// Starts input test
+    /// Forces text mode
     #[arg(short, long)]
-    pub input_test: bool,
+    pub text: bool,
 }

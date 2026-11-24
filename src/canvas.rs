@@ -44,8 +44,8 @@ pub struct Output {
     buffers: Vec<Buffer>,
     buffer: usize,
     flipping: bool,
-    pub width: u32,
-    pub height: u32,
+    pub w: u32,
+    pub h: u32,
 }
 
 impl Output {
@@ -54,14 +54,15 @@ impl Output {
     }
 }
 
-pub struct Canvas {
+pub struct Canvas<'a> {
     pub cards: Vec<Card>,
+    pub layers: Vec<Layer<'a>>,
     crtcs: Vec<crtcHandle>,
     pub outputs: Vec<Output>,
     pub tx: Sender<Event>,
 }
 
-impl Canvas {
+impl<'a> Canvas<'a> {
     pub fn flip(&mut self, op_id: usize) -> Result<(), Box<dyn Error>> {
         let (c_id, crtc, target, flipping) = {
             let output = &self.outputs[op_id];
@@ -83,9 +84,10 @@ impl Canvas {
         Ok(())
     }
 
-    pub fn new(tx: Sender<Event>) -> Canvas {
+    pub fn new(tx: Sender<Event>) -> Canvas<'a> {
         Self {
             cards: Vec::new(),
+            layers: Vec::new(),
             crtcs: Vec::new(),
             outputs: Vec::new(),
             tx: tx,
@@ -177,8 +179,8 @@ impl Canvas {
                 buffers: buffers,
                 buffer: 0,
                 flipping: false,
-                width: width,
-                height: height,
+                w: width,
+                h: height,
             });
         }
 
@@ -204,8 +206,8 @@ impl Canvas {
         op_i: usize,
     ) -> Result<MappedBuffer<'_>, Box<dyn Error>> {
         let output = &mut self.outputs[op_i];
-        let width = output.width;
-        let height = output.height;
+        let width = output.w;
+        let height = output.h;
         let next = 1 - output.buffer; // 1 - 1 = 0, 1 - 0 = 1
         let buf = &mut output.buffers[next];
         let pitch = buf.db.pitch();
@@ -221,32 +223,80 @@ impl Canvas {
         })
     }
 
-    pub fn paint(
-        &mut self,
-        op_id: usize,
-        //_layers: &[Layer<'_>],
-    ) -> Result<(), Box<dyn Error>> {
+    pub fn paint(&mut self, op_id: usize) -> Result<(), Box<dyn Error>> {
         let next = {
             let output = &self.outputs[op_id];
             1 - output.buffer
         };
 
-        let pixel: [u8; 4] = [0x80, 0x30, 0x1e, 0x00];
-
         {
-            let mut mapped = self.map(op_id)?;
-            let pitch = mapped.pitch as usize;
+            let mut mapped = &mut self.map(op_id)?;
+            let pitch = mapped.pitch as usize; // width + padding
             let width = mapped.width as usize;
             let height = mapped.height as usize;
             let pixels = mapped.mapping.as_mut();
 
-            for y in 0..height {
-                let start = y * pitch;
-                for x in 0..width {
-                    let scan = start + x * 4;
-                    pixels[scan..scan + 4].copy_from_slice(&pixel);
+            let mut layers: Vec<&Layer<'_>> =
+                self.layers.iter().filter(|l| l.visible).collect();
+            layers.sort_by_key(|l| l.z);
+            for layer in layers {
+                let Frame::Dumb {
+                    w,
+                    h,
+                    pitch: frame_pitch,
+                    pixels: frame_pixels,
+                    damage,
+                    ..
+                } = layer.frame
+                else {
+                    continue;
+                };
+
+                let rects = match damage {
+                    Damage::None => continue,
+                    Damage::Full => &[Rect {
+                        x: 0,
+                        y: 0,
+                        w: w as i32,
+                        h: h as i32,
+                    }],
+                    Damage::Rects(rects) => rects,
+                };
+
+                for rect in rects {
+                    // max = absolute value
+                    let x0 = rect.x.max(0) as usize;
+                    let y0 = rect.y.max(0) as usize;
+                    // min = ceiling
+                    let x1 = ((rect.x + rect.w).max(0) as usize).min(width);
+                    let y1 = ((rect.y + rect.h).max(0) as usize).min(height);
+
+                    if x0 >= x1 || y0 >= y1 {
+                        continue;
+                    }
+                    let size = (x1 - x0) * 4; // rect width * pixel size
+                    let fp = frame_pitch as usize; // frame pitch
+                    let col = x0 * 4;
+
+                    for y in y0..y1 {
+                        // y index + starting x * pixel size
+                        let d_start = y * fp + col; // damage start
+                        let d_end = d_start + size; // damage end
+                        let row = &frame_pixels[d_start..d_end];
+
+                        let b_start = y * pitch + col;
+                        let b_end = b_start + size;
+                        pixels[b_start..b_end].copy_from_slice(row);
+                    }
                 }
             }
+
+            // for y in 0..height {
+            //     let start = y * pitch;
+            //     let size = width * 4; // each pixel is 4 bytes (R, G, B, A)
+            //     let row = screen[start..start + size];
+            //     pixels[start..start + size].copy_from_slice(&row);
+            // }
         }
 
         let card_id = self.outputs[op_id].card_id;

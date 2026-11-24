@@ -29,7 +29,7 @@ impl Session {
 
         let seat = Seat::open(move |_, event| {
             p_clone.set(Some(event));
-            if debug() || tty() {
+            if tty() {
                 force_tty();
             }
         });
@@ -56,7 +56,7 @@ impl Session {
     }
 
     fn enable(&mut self) -> Result<(), Box<dyn Error>> {
-        if debug() || tty() {
+        if tty() {
             force_tty();
         }
         log!(self.tx, "seat session enabled");
