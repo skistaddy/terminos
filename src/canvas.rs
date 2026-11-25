@@ -8,8 +8,8 @@ struct Buffer {
 pub struct MappedBuffer<'map> {
     mapping: drm::control::dumbbuffer::DumbMapping<'map>,
     pub pitch: u32,
-    pub width: u32,
-    pub height: u32,
+    pub w: u32,
+    pub h: u32,
 }
 
 pub struct Card(OwnedFd);
@@ -206,8 +206,8 @@ impl<'a> Canvas<'a> {
         op_i: usize,
     ) -> Result<MappedBuffer<'_>, Box<dyn Error>> {
         let output = &mut self.outputs[op_i];
-        let width = output.w;
-        let height = output.h;
+        let w = output.w;
+        let h = output.h;
         let next = 1 - output.buffer; // 1 - 1 = 0, 1 - 0 = 1
         let buf = &mut output.buffers[next];
         let pitch = buf.db.pitch();
@@ -218,35 +218,40 @@ impl<'a> Canvas<'a> {
         Ok(MappedBuffer {
             mapping,
             pitch,
-            width,
-            height,
+            w,
+            h,
         })
     }
 
-    pub fn paint(&mut self, op_id: usize) -> Result<(), Box<dyn Error>> {
+    pub fn paint(
+        &mut self,
+        op_id: usize,
+        layers: &[Layer],
+    ) -> Result<(), Box<dyn Error>> {
         let next = {
             let output = &self.outputs[op_id];
             1 - output.buffer
         };
 
-        {
-            let mut mapped = &mut self.map(op_id)?;
-            let pitch = mapped.pitch as usize; // width + padding
-            let width = mapped.width as usize;
-            let height = mapped.height as usize;
-            let pixels = mapped.mapping.as_mut();
+        let pixels = {
+            let pitch = self.outputs[op_id].buffers[next].db.pitch() as usize;
+            let width = self.outputs[op_id].w as usize;
+            let height = self.outputs[op_id].h as usize;
+            let mut pixels = vec![0u8; pitch * height];
 
+            println!("{layers:?}");
             let mut layers: Vec<&Layer<'_>> =
-                self.layers.iter().filter(|l| l.visible).collect();
+                layers.iter().filter(|l| l.visible).collect();
             layers.sort_by_key(|l| l.z);
+
             for layer in layers {
                 let Frame::Dumb {
                     w,
                     h,
                     pitch: frame_pitch,
+                    format,
                     pixels: frame_pixels,
                     damage,
-                    ..
                 } = layer.frame
                 else {
                     continue;
@@ -290,15 +295,10 @@ impl<'a> Canvas<'a> {
                     }
                 }
             }
+            pixels
+        };
 
-            // for y in 0..height {
-            //     let start = y * pitch;
-            //     let size = width * 4; // each pixel is 4 bytes (R, G, B, A)
-            //     let row = screen[start..start + size];
-            //     pixels[start..start + size].copy_from_slice(&row);
-            // }
-        }
-
+        self.map(op_id)?.mapping.as_mut().copy_from_slice(&pixels);
         let card_id = self.outputs[op_id].card_id;
         let card = &self.cards[card_id];
         self.flip(op_id);

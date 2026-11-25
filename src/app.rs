@@ -89,22 +89,30 @@ impl App {
                     Ok(Event::Start { cards, inputs }) => {
                         crate::input::catch(app.tx.clone(), inputs);
                         canvas.start(cards);
-                        let pixel: [u8; 4] = [0x80, 0x30, 0x1e, 0x00];
+                        let pixel: [u8; 4] = [0xB4, 0x69, 0xFF, 0x00];
+
+                        let w = canvas.outputs[0].w as i32;
+                        let h = canvas.outputs[0].h as i32;
+                        let pixels = pixel.repeat((4 * h) as usize);
 
                         let layer = Layer {
                             id: 1,
                             dst: Rect {
-                                x: 0,
-                                y: 0,
-                                w: canvas.outputs[0].width,
-                                h: canvas.outputs[0].height,
+                                x: 100,
+                                y: 100,
+                                w,
+                                h,
                             },
                             scroll: (0, 0),
-                            z: -1,
+                            z: 0,
                             visible: true,
-                            frame: Frame {
-                                data: FrameData {},
-                                damage: Damage::None,
+                            frame: Frame::Dumb {
+                                w: w as u32,
+                                h: h as u32,
+                                pitch: 4,
+                                format: Format::Xrgb8888,
+                                pixels: &pixels,
+                                damage: Damage::Full,
                             },
                         };
                         canvas.paint(0, &[layer]);
